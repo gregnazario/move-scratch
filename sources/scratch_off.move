@@ -56,12 +56,14 @@ module scratch_addr::scratch_off {
         Buy {
             owner: address,
             card: address,
-            value: u64
+            usdc_amount: u64,
+            bonus_fa: address,
+            bonus_amount: u64
         }
         Scratch {
             owner: address,
             card: address,
-            amount: u64,
+            usdc_amount: u64,
             bonus_fa: address,
             bonus_amount: u64
         }
@@ -92,19 +94,18 @@ module scratch_addr::scratch_off {
         mutate_ref: MutatorRef,
         /// To set `scratched` to true
         extend_ref: ExtendRef,
-        /// If the card was scratched
-        scratched: bool,
-        /// Win amount evaluated over cells
-        value: u64,
-        /// A 4 row, 3 column vector of values
-        cells: vector<vector<u64>>
+        details: CardSummary,
     }
 
-    struct CardSummary {
+    struct CardSummary has store, copy {
         /// If the card was scratched
         scratched: bool,
         /// Win amount evaluated over cells
-        value: u64,
+        usdc_amount: u64,
+        /// Bonus amount
+        bonus_amount: u64,
+        /// Bonus FA metadata address
+        bonus_fa: address,
         /// A 4 row, 3 column vector of values
         cells: vector<vector<u64>>
     }
@@ -154,11 +155,24 @@ module scratch_addr::scratch_off {
             }
         };
         let win_amount = evaluate_win_amount(&board);
+
+        // And now do the bonus!
+        let game_state = game_state();
+        let bonus = pick_amount(&game_state.bonus_prizes);
+        let (bonus_addr, bonus_amount) = if (bonus.is_some()) {
+            let bonus_addr = bonus.destroy_some();
+            (bonus_addr, win_amount)
+        } else {
+            (@0x0, 0)
+        };
+
         let card_addr = object::address_from_constructor_ref(&const_ref);
         emit(ScratcherEvent::Buy {
             owner: receiver,
             card: card_addr,
-            value: win_amount
+            usdc_amount: win_amount,
+            bonus_fa: bonus_addr,
+            bonus_amount
         });
 
         // Add details to the card
@@ -170,9 +184,13 @@ module scratch_addr::scratch_off {
             burn_ref,
             mutate_ref,
             extend_ref,
-            scratched: false,
-            value: win_amount,
-            cells: board
+            details: CardSummary {
+                scratched: false,
+                usdc_amount: win_amount,
+                cells: board,
+                bonus_amount,
+                bonus_fa: bonus_addr
+            }
         });
 
         // Transfer to user
@@ -219,33 +237,31 @@ module scratch_addr::scratch_off {
 
         // Check that it wasn't already scratched
         let card_address = object::object_address(&card);
-        assert!(!Card[card_address].scratched, E_ALREADY_SCRATCHED);
+        assert!(!Card[card_address].details.scratched, E_ALREADY_SCRATCHED);
 
         // Set that it's scratched
-        Card[card_address].scratched = true;
+        Card[card_address].details.scratched = true;
 
         let game_state = game_state();
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         let usdc_obj = usdc();
 
-        let amount = Card[card_address].value;
-        primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, amount);
-
-        // TODO: We can probably move this to mint time like the other one
-        // And now do the bonus!
-        let bonus = pick_amount(&game_state.bonus_prizes);
-        let (bonus_amount, bonus_fa) = if (bonus.is_some()) {
-            let bonus_fa = bonus.destroy_some();
+        let usdc_amount = Card[card_address].details.usdc_amount;
+        primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, usdc_amount);
+        let (bonus_amount, bonus_fa) = if (Card[card_address].details.bonus_amount > 0) {
+            let bonus_fa = Card[card_address].details.bonus_fa;
+            let bonus_amount = Card[card_address].details.bonus_amount;
             let fa_md = fa_metadata(bonus_fa);
-            primary_fungible_store::transfer(&game_signer, fa_md, caller_address, amount);
-            (amount, bonus_fa)
+            primary_fungible_store::transfer(&game_signer, fa_md, caller_address, bonus_amount);
+            (usdc_amount, bonus_fa)
         } else {
             (0, @0x0)
         };
+
         emit(ScratcherEvent::Scratch {
             owner: caller_address,
             card: card_address,
-            amount,
+            usdc_amount,
             bonus_amount,
             bonus_fa,
         })
@@ -384,11 +400,6 @@ module scratch_addr::scratch_off {
     #[view]
     fun get_card(card: Object<Card>): CardSummary {
         let obj_addr = object::object_address(&card);
-        let card = &Card[obj_addr];
-        CardSummary {
-            value: card.value,
-            scratched: card.scratched,
-            cells: card.cells
-        }
+        Card[obj_addr].details
     }
 }
