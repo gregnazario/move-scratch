@@ -4,9 +4,11 @@
 module scratch_addr::scratch_off {
 
     use std::option;
+    use std::option::Option;
     use std::signer;
     use std::string::utf8;
     use aptos_std::ordered_map::{Self, OrderedMap};
+    use aptos_framework::event::emit;
     use aptos_framework::fungible_asset::Metadata;
     use aptos_framework::object::{Self, ExtendRef, Object};
     use aptos_framework::primary_fungible_store;
@@ -14,8 +16,6 @@ module scratch_addr::scratch_off {
     use aptos_token_objects::collection;
     use aptos_token_objects::token::{Self, Token, BurnRef, MutatorRef};
 
-    /// For getting actual USDC
-    const USDC_ADDRESS: address = @0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b;
     /// Cost in smallest unit (e.g., 1 USDC = 1_000_000 micro USDC)
     const COST_PER_CARD: u64 = 1_000_000;
     /// For looking up the object owning the game
@@ -51,6 +51,22 @@ module scratch_addr::scratch_off {
     /// Not enough balance to withdraw
     const E_NOT_ENOUGH_USDC_TO_WITHDRAW: u64 = 11;
 
+    #[event]
+    enum ScratcherEvent has drop, store {
+        Buy {
+            owner: address,
+            card: address,
+            value: u64
+        }
+        Scratch {
+            owner: address,
+            card: address,
+            amount: u64,
+            bonus_fa: address,
+            bonus_amount: u64
+        }
+    }
+
     #[resource_group = 0x1::object::ObjectGroup]
     /// Game state, is at the game object, keeps track of admin, and can payout prizes
     ///
@@ -62,6 +78,8 @@ module scratch_addr::scratch_off {
         extend_ref: ExtendRef,
         /// Prizes, key is odds, value is payout
         prizes: OrderedMap<u64, u64>,
+        /// Bonus prizes, key is odds, value is address of prize metadata
+        bonus_prizes: OrderedMap<u64, address>
     }
 
     #[resource_group = 0x1::object::ObjectGroup]
@@ -76,6 +94,17 @@ module scratch_addr::scratch_off {
         extend_ref: ExtendRef,
         /// If the card was scratched
         scratched: bool,
+        /// Win amount evaluated over cells
+        value: u64,
+        /// A 4 row, 3 column vector of values
+        cells: vector<vector<u64>>
+    }
+
+    struct CardSummary {
+        /// If the card was scratched
+        scratched: bool,
+        /// Win amount evaluated over cells
+        value: u64,
         /// A 4 row, 3 column vector of values
         cells: vector<vector<u64>>
     }
@@ -121,9 +150,16 @@ module scratch_addr::scratch_off {
         ];
         for (y in 0..4) {
             for (x in 0..3) {
-                board[y][x] = pick_amount(prizes);
+                board[y][x] = pick_amount(prizes).destroy_with_default(0);
             }
         };
+        let win_amount = evaluate_win_amount(&board);
+        let card_addr = object::address_from_constructor_ref(&const_ref);
+        emit(ScratcherEvent::Buy {
+            owner: receiver,
+            card: card_addr,
+            value: win_amount
+        });
 
         // Add details to the card
         let card_signer = object::generate_signer(&const_ref);
@@ -135,6 +171,7 @@ module scratch_addr::scratch_off {
             mutate_ref,
             extend_ref,
             scratched: false,
+            value: win_amount,
             cells: board
         });
 
@@ -156,23 +193,24 @@ module scratch_addr::scratch_off {
     /// The odds are defined as in a percentage, with 3 decimal points e.g.
     ///
     /// 100 = 0.1%
-    fun pick_amount(prizes: &OrderedMap<u64, u64>): u64 {
+    fun pick_amount<T: copy>(prizes: &OrderedMap<u64, T>): Option<T> {
         let num = randomness::u64_range(0, HUNDRED_PERCENT);
         let odds = prizes.keys();
         let length = odds.length();
         for (i in 0..length) {
             let odd = odds[i];
             if (num < odd) {
-                return *prizes.borrow(&odd)
+                return option::some(*prizes.borrow(&odd))
             };
 
             num -= i;
         };
 
         // Defaults to 0, if you didn't make up the right number of odds
-        0
+        option::none()
     }
 
+    #[randomness]
     /// Scratches whole card, and pays out the predetermined amount
     entry fun scratch_card(caller: &signer, card: Object<Card>) {
         let caller_address = signer::address_of(caller);
@@ -190,9 +228,34 @@ module scratch_addr::scratch_off {
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         let usdc_obj = usdc();
 
+        let amount = Card[card_address].value;
+        primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, amount);
+
+        // TODO: We can probably move this to mint time like the other one
+        // And now do the bonus!
+        let bonus = pick_amount(&game_state.bonus_prizes);
+        let (bonus_amount, bonus_fa) = if (bonus.is_some()) {
+            let bonus_fa = bonus.destroy_some();
+            let fa_md = fa_metadata(bonus_fa);
+            primary_fungible_store::transfer(&game_signer, fa_md, caller_address, amount);
+            (amount, bonus_fa)
+        } else {
+            (0, @0x0)
+        };
+        emit(ScratcherEvent::Scratch {
+            owner: caller_address,
+            card: card_address,
+            amount,
+            bonus_amount,
+            bonus_fa,
+        })
+    }
+
+    inline fun evaluate_win_amount(cells: &vector<vector<u64>>): u64 {
+        let win_amount = 0;
         // Evaluate win per row
         for (y in 0..4) {
-            let row = &Card[card_address].cells[y];
+            let row = &cells[y];
             let amount = row[0];
 
             // Skip 0, you can't win anyways
@@ -202,9 +265,11 @@ module scratch_addr::scratch_off {
 
             // Handle payout
             if (row.all(|val| *val == amount)) {
-                primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, amount);
+                win_amount += amount;
             }
-        }
+        };
+
+        win_amount
     }
 
     /// Sets odds
@@ -221,6 +286,20 @@ module scratch_addr::scratch_off {
 
         let game_state = game_state_mut();
         game_state.prizes = ordered_map::new_from(odds, payouts);
+    }
+
+    /// Odds must be equal length with payouts.  Odds must add up underneath 100%
+    entry fun set_bonus_prizes(admin: &signer, odds: vector<u64>, assets: vector<address>) {
+        verify_admin(admin);
+        let odds_length = odds.length();
+        let payouts_length = odds.length();
+        assert!(odds_length == payouts_length, E_INVALID_ODDS_AND_PRIZES);
+
+        // Verify that the odds are < 100%
+        assert!(odds.fold(0, |acc, val| acc + val) <= HUNDRED_PERCENT, E_ODDS_GREATER_THAN_HUNDRED_PERCENT);
+
+        let game_state = game_state_mut();
+        game_state.bonus_prizes = ordered_map::new_from(odds, assets);
     }
 
     /// Withdraws funds to the destination address
@@ -256,6 +335,7 @@ module scratch_addr::scratch_off {
                 admin: @scratch_addr,
                 extend_ref,
                 prizes,
+                bonus_prizes: ordered_map::new()
             }
         );
 
@@ -294,6 +374,21 @@ module scratch_addr::scratch_off {
     }
 
     inline fun usdc(): Object<Metadata> {
-        object::address_to_object<Metadata>(USDC_ADDRESS)
+        fa_metadata(@usdc_address)
+    }
+
+    inline fun fa_metadata(addr: address): Object<Metadata> {
+        object::address_to_object<Metadata>(addr)
+    }
+
+    #[view]
+    fun get_card(card: Object<Card>): CardSummary {
+        let obj_addr = object::object_address(&card);
+        let card = &Card[obj_addr];
+        CardSummary {
+            value: card.value,
+            scratched: card.scratched,
+            cells: card.cells
+        }
     }
 }
