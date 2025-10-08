@@ -1,0 +1,22 @@
+[package]
+name = "scratch-off"
+version = "1.0.0"
+authors = []
+
+[addresses]
+scratch_addr = "_"
+
+[dev-addresses]
+scratch_addr = "0xabcd"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-framework"
+
+[dependencies.AptosTokenObjects]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "mainnet"
+subdir = "aptos-token-objects"
+
+[dev-dependencies]
