@@ -34,6 +34,10 @@ module scratch_addr::scratch_off {
     const DEFAULT_PAYOUTS: vector<u64> = vector[0, 250_000, 500_000, 750_000, 2_000_000, 5_000_000, 25_000_000, 100_000_000];
 
     // -- Errors --
+    /// Can't withdraw zero USDC
+    const E_CANT_WITHDRAW_ZERO_BALANCE: u64 = 3;
+    /// Can't buy 0 cards
+    const E_CANT_BUY_ZERO_CARDS: u64 = 4;
     /// Invalid odds, add up to over 100%
     const E_ODDS_GREATER_THAN_HUNDRED_PERCENT: u64 = 5;
     /// Invalid odds, doesn't match prizes
@@ -113,6 +117,7 @@ module scratch_addr::scratch_off {
     #[randomness]
     /// Buy multiple scratcher cards, this must be private, or can be gamed
     entry fun buy_cards(caller: &signer, num_cards: u64) {
+        assert!(num_cards > 0, E_CANT_BUY_ZERO_CARDS);
         let buyer = signer::address_of(caller);
 
         // Take money
@@ -159,6 +164,8 @@ module scratch_addr::scratch_off {
         // And now do the bonus!
         let game_state = game_state();
         let bonus = pick_amount(&game_state.bonus_prizes);
+
+        // Bonus amount is the same as the win amount when there's a bonus
         let (bonus_addr, bonus_amount) = if (bonus.is_some()) {
             let bonus_addr = bonus.destroy_some();
             (bonus_addr, win_amount)
@@ -221,7 +228,7 @@ module scratch_addr::scratch_off {
                 return option::some(*prizes.borrow(&odd))
             };
 
-            num -= i;
+            num -= odd;
         };
 
         // Defaults to 0, if you didn't make up the right number of odds
@@ -246,14 +253,16 @@ module scratch_addr::scratch_off {
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         let usdc_obj = usdc();
 
+        // Transfer USDC prize
         let usdc_amount = Card[card_address].details.usdc_amount;
         primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, usdc_amount);
+
+        // Transfer bonus prize
         let (bonus_amount, bonus_fa) = if (Card[card_address].details.bonus_amount > 0) {
             let bonus_fa = Card[card_address].details.bonus_fa;
             let bonus_amount = Card[card_address].details.bonus_amount;
-            let fa_md = fa_metadata(bonus_fa);
-            primary_fungible_store::transfer(&game_signer, fa_md, caller_address, bonus_amount);
-            (usdc_amount, bonus_fa)
+            primary_fungible_store::transfer(&game_signer, fa_metadata(bonus_fa), caller_address, bonus_amount);
+            (bonus_amount, bonus_fa)
         } else {
             (0, @0x0)
         };
@@ -294,7 +303,7 @@ module scratch_addr::scratch_off {
     entry fun set_odds(admin: &signer, odds: vector<u64>, payouts: vector<u64>) {
         verify_admin(admin);
         let odds_length = odds.length();
-        let payouts_length = odds.length();
+        let payouts_length = payouts.length();
         assert!(odds_length == payouts_length, E_INVALID_ODDS_AND_PRIZES);
 
         // Verify that the odds are < 100%
@@ -308,8 +317,8 @@ module scratch_addr::scratch_off {
     entry fun set_bonus_prizes(admin: &signer, odds: vector<u64>, assets: vector<address>) {
         verify_admin(admin);
         let odds_length = odds.length();
-        let payouts_length = odds.length();
-        assert!(odds_length == payouts_length, E_INVALID_ODDS_AND_PRIZES);
+        let assets_length = assets.length();
+        assert!(odds_length == assets_length, E_INVALID_ODDS_AND_PRIZES);
 
         // Verify that the odds are < 100%
         assert!(odds.fold(0, |acc, val| acc + val) <= HUNDRED_PERCENT, E_ODDS_GREATER_THAN_HUNDRED_PERCENT);
@@ -320,10 +329,14 @@ module scratch_addr::scratch_off {
 
     /// Withdraws funds to the destination address
     entry fun withdraw_funds(admin: &signer, destination: address, amount: u64) {
+        assert!(amount > 0, E_CANT_WITHDRAW_ZERO_BALANCE);
         verify_admin(admin);
         let game_state = game_state();
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
-        assert!(primary_fungible_store::is_balance_at_least(game_object_addr(), usdc(), amount), E_NOT_ENOUGH_USDC);
+        assert!(
+            primary_fungible_store::is_balance_at_least(game_object_addr(), usdc(), amount),
+            E_NOT_ENOUGH_USDC_TO_WITHDRAW
+        );
         primary_fungible_store::transfer(&game_signer, usdc(), destination, amount)
     }
 
@@ -366,7 +379,7 @@ module scratch_addr::scratch_off {
         // TODO: maybe add collection refs
     }
 
-    inline fun verify_admin(caller: &signer, ): address {
+    inline fun verify_admin(caller: &signer): address {
         let caller_address = signer::address_of(caller);
         let game_state = game_state();
         assert!(caller_address == game_state.admin, E_UNAUTHORIZED);
@@ -402,4 +415,6 @@ module scratch_addr::scratch_off {
         let obj_addr = object::object_address(&card);
         Card[obj_addr].details
     }
+
+    // TODO: add tests
 }
