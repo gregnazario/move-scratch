@@ -67,6 +67,8 @@ module scratch_addr::scratch_off {
     const E_INVALID_FA_CONVERSION_RATIO: u64 = 15;
     /// Mismatched assets
     const E_MISMATCHED_ASSETS: u64 = 16;
+    /// Not enough tokens to output winnings
+    const E_NOT_ENOUGH_TOKENS: u64 = 17;
 
     #[event]
     enum ScratcherEvent has drop, store {
@@ -295,7 +297,12 @@ module scratch_addr::scratch_off {
         // Transfer prize
         let fa_address = Card[card_address].details.fa_metadata;
         let amount = Card[card_address].details.amount;
-        primary_fungible_store::transfer(&game_signer, fa_metadata(fa_address), caller_address, amount);
+        let fa_metadata = fa_metadata(fa_address);
+        assert!(
+            primary_fungible_store::is_balance_at_least(signer::address_of(&game_signer), fa_metadata, amount),
+            E_NOT_ENOUGH_TOKENS
+        );
+        primary_fungible_store::transfer(&game_signer, fa_metadata, caller_address, amount);
 
         emit(ScratcherEvent::Scratch {
             owner: caller_address,
