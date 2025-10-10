@@ -177,15 +177,23 @@ module scratch_addr::scratch_off {
             vector[0, 0, 0],
             vector[0, 0, 0],
         ];
+        let win_usd_amount = pick_amount(prizes).destroy_with_default(0);
+
+        // Pick row to win that amount
+        let win_row = randomness::u64_range(0, 4);
+
+        let prize_values = prizes.values();
+        let num_prizes = prize_values.length();
         debug::print(&utf8(b"7"));
         for (y in 0..4) {
             for (x in 0..3) {
-                board[y][x] = pick_amount(prizes).destroy_with_default(0);
+                if (y == win_row) {
+                    board[y][x] = win_usd_amount;
+                } else {
+                    board[y][x] = randomness::u64_range(0, num_prizes);
+                }
             }
         };
-        debug::print(&utf8(b"8"));
-        let win_usd_amount = evaluate_win_amount(&board);
-
         // Now determine the token to return, default to USDC
         debug::print(&utf8(b"9"));
         let game_state = game_state();
