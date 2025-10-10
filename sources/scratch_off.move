@@ -7,6 +7,7 @@ module scratch_addr::scratch_off {
     use std::option::Option;
     use std::signer;
     use std::string::utf8;
+    use aptos_std::debug;
     use aptos_std::ordered_map::{Self, OrderedMap};
     use aptos_framework::event::emit;
     use aptos_framework::fungible_asset::Metadata;
@@ -137,16 +138,21 @@ module scratch_addr::scratch_off {
         let buyer = signer::address_of(caller);
 
         // Take money
+        debug::print(&utf8(b"1"));
         let game_addr = game_object_addr();
         let cost = num_cards * COST_PER_CARD;
+        debug::print(&utf8(b"2"));
         assert!(primary_fungible_store::is_balance_at_least(buyer, usdc(), cost), E_NOT_ENOUGH_USDC);
+        debug::print(&utf8(b"3"));
         primary_fungible_store::transfer(caller, usdc(), game_addr, cost);
 
+        debug::print(&utf8(b"4"));
         // Give cards
         let game_state = game_state_mut();
         let prizes = &game_state.prizes;
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         for (i in 0..num_cards) {
+            debug::print(&utf8(b"5"));
             init_card(&game_signer, buyer, prizes);
         };
     }
@@ -163,6 +169,7 @@ module scratch_addr::scratch_off {
             utf8(SCRATCHER_URI),
         );
 
+        debug::print(&utf8(b"6"));
         // Generate the squares
         let board = vector[
             vector[0, 0, 0],
@@ -170,16 +177,20 @@ module scratch_addr::scratch_off {
             vector[0, 0, 0],
             vector[0, 0, 0],
         ];
+        debug::print(&utf8(b"7"));
         for (y in 0..4) {
             for (x in 0..3) {
                 board[y][x] = pick_amount(prizes).destroy_with_default(0);
             }
         };
+        debug::print(&utf8(b"8"));
         let win_usd_amount = evaluate_win_amount(&board);
 
         // Now determine the token to return, default to USDC
+        debug::print(&utf8(b"9"));
         let game_state = game_state();
         let fa_address = pick_amount(&game_state.fa_prizes).destroy_with_default(@usdc_address);
+        debug::print(&utf8(b"10"));
         let amount = if (fa_address != @usdc_address) {
             // Use the fa_rates to do the conversion
             assert!(game_state.fa_rates.contains(&fa_address), E_INVALID_FA_CONVERSION_RATIO);
@@ -189,6 +200,7 @@ module scratch_addr::scratch_off {
             win_usd_amount
         };
 
+        debug::print(&utf8(b"11"));
         let card_addr = object::address_from_constructor_ref(&const_ref);
         emit(ScratcherEvent::Buy {
             owner: receiver,
@@ -199,6 +211,7 @@ module scratch_addr::scratch_off {
         });
 
         // Add details to the card
+        debug::print(&utf8(b"12"));
         let card_signer = object::generate_signer(&const_ref);
         let extend_ref = object::generate_extend_ref(&const_ref);
         let burn_ref = token::generate_burn_ref(&const_ref);
@@ -216,11 +229,13 @@ module scratch_addr::scratch_off {
             }
         });
 
+        debug::print(&utf8(b"13"));
         // Transfer to user
         let token = object::object_from_constructor_ref<Token>(&const_ref);
         object::transfer(game_signer, token, receiver);
 
         // Then make soulbound (cause why not)
+        debug::print(&utf8(b"14"));
         let transfer_ref = object::generate_transfer_ref(&const_ref);
         object::disable_ungated_transfer(&transfer_ref);
     }
@@ -434,12 +449,12 @@ module scratch_addr::scratch_off {
         // Create object
         let const_ref = object::create_named_object(contract, SEED);
         let extend_ref = object::generate_extend_ref(&const_ref);
-        let object_signer = object::generate_signer(&const_ref);
+        let game_signer = object::generate_signer(&const_ref);
 
         // Initialize game state
         let prizes = ordered_map::new_from(DEFAULT_ODDS, DEFAULT_PAYOUTS);
         move_to(
-            &object_signer,
+            &game_signer,
             GameState {
                 admin: @scratch_addr,
                 extend_ref,
@@ -451,7 +466,7 @@ module scratch_addr::scratch_off {
 
         // Make scratcher collection, owned by object
         let _const_ref = collection::create_unlimited_collection(
-            contract,
+            &game_signer,
             utf8(b"Scratchers for prizes"),
             utf8(COLLECTION_NAME),
             option::none(), // royalty
