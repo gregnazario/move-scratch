@@ -15,6 +15,8 @@ module scratch_addr::scratch_off {
     use aptos_framework::randomness;
     use aptos_token_objects::collection;
     use aptos_token_objects::token::{Self, Token, BurnRef, MutatorRef};
+    use scratch_addr::ratio::Ratio;
+    use scratch_addr::ratio;
 
     /// Cost in smallest unit (e.g., 1 USDC = 1_000_000 micro USDC)
     const COST_PER_CARD: u64 = 1_000_000;
@@ -40,7 +42,7 @@ module scratch_addr::scratch_off {
     const E_CANT_BUY_ZERO_CARDS: u64 = 4;
     /// Invalid odds, add up to over 100%
     const E_ODDS_GREATER_THAN_HUNDRED_PERCENT: u64 = 5;
-    /// Invalid odds, doesn't match prizes
+    /// Invalid odds length, doesn't match assets length
     const E_INVALID_ODDS_AND_PRIZES: u64 = 6;
 
     /// Not enough balance to buy cards
@@ -54,22 +56,32 @@ module scratch_addr::scratch_off {
     const E_UNAUTHORIZED: u64 = 10;
     /// Not enough balance to withdraw
     const E_NOT_ENOUGH_USDC_TO_WITHDRAW: u64 = 11;
+    /// Invalid numerators length, doesn't match assets length
+    const E_INVALID_NUMERATOR_LENGTH: u64 = 12;
+    /// Invalid denominators length, doesn't match assets length
+    const E_INVALID_DENOMINATOR_LENGTH: u64 = 13;
+    /// Invalid denominator, can't be 0
+    const E_INVALID_DENOMINATOR: u64 = 14;
+    /// Invalid FA conversion ratio, not set
+    const E_INVALID_FA_CONVERSION_RATIO: u64 = 15;
+    /// Mismatched assets
+    const E_MISMATCHED_ASSETS: u64 = 16;
 
     #[event]
     enum ScratcherEvent has drop, store {
         Buy {
             owner: address,
             card: address,
-            usdc_amount: u64,
-            bonus_fa: address,
-            bonus_amount: u64
+            fa_metadata: address,
+            usd_amount: u64,
+            amount: u64,
         }
         Scratch {
             owner: address,
             card: address,
-            usdc_amount: u64,
-            bonus_fa: address,
-            bonus_amount: u64
+            fa_metadata: address,
+            usd_amount: u64,
+            amount: u64
         }
     }
 
@@ -84,8 +96,10 @@ module scratch_addr::scratch_off {
         extend_ref: ExtendRef,
         /// Prizes, key is odds, value is payout
         prizes: OrderedMap<u64, u64>,
-        /// Bonus prizes, key is odds, value is address of prize metadata
-        bonus_prizes: OrderedMap<u64, address>
+        /// Address for each prize associated, defaults to USDC
+        fa_prizes: OrderedMap<u64, address>,
+        /// Payout ratios for other prizes that aren't USDC
+        fa_rates: OrderedMap<address, Ratio>
     }
 
     #[resource_group = 0x1::object::ObjectGroup]
@@ -98,18 +112,20 @@ module scratch_addr::scratch_off {
         mutate_ref: MutatorRef,
         /// To set `scratched` to true
         extend_ref: ExtendRef,
+        /// Details about the card
         details: CardSummary,
     }
 
+    /// Details about a card, the state, and what's being won
     struct CardSummary has store, copy {
         /// If the card was scratched
         scratched: bool,
         /// Win amount evaluated over cells
-        usdc_amount: u64,
-        /// Bonus amount
-        bonus_amount: u64,
-        /// Bonus FA metadata address
-        bonus_fa: address,
+        usd_amount: u64,
+        /// FA metadata address
+        fa_metadata: address,
+        /// Amount of FA to payout
+        amount: u64,
         /// A 4 row, 3 column vector of values
         cells: vector<vector<u64>>
     }
@@ -159,27 +175,27 @@ module scratch_addr::scratch_off {
                 board[y][x] = pick_amount(prizes).destroy_with_default(0);
             }
         };
-        let win_amount = evaluate_win_amount(&board);
+        let win_usd_amount = evaluate_win_amount(&board);
 
-        // And now do the bonus!
+        // Now determine the token to return, default to USDC
         let game_state = game_state();
-        let bonus = pick_amount(&game_state.bonus_prizes);
-
-        // Bonus amount is the same as the win amount when there's a bonus
-        let (bonus_addr, bonus_amount) = if (bonus.is_some()) {
-            let bonus_addr = bonus.destroy_some();
-            (bonus_addr, win_amount)
+        let fa_address = pick_amount(&game_state.fa_prizes).destroy_with_default(@usdc_address);
+        let amount = if (fa_address != @usdc_address) {
+            // Use the fa_rates to do the conversion
+            assert!(game_state.fa_rates.contains(&fa_address), E_INVALID_FA_CONVERSION_RATIO);
+            let ratio = game_state.fa_rates.borrow(&fa_address);
+            ratio.multiply(win_usd_amount)
         } else {
-            (@0x0, 0)
+            win_usd_amount
         };
 
         let card_addr = object::address_from_constructor_ref(&const_ref);
         emit(ScratcherEvent::Buy {
             owner: receiver,
             card: card_addr,
-            usdc_amount: win_amount,
-            bonus_fa: bonus_addr,
-            bonus_amount
+            usd_amount: win_usd_amount,
+            fa_metadata: fa_address,
+            amount
         });
 
         // Add details to the card
@@ -193,10 +209,10 @@ module scratch_addr::scratch_off {
             extend_ref,
             details: CardSummary {
                 scratched: false,
-                usdc_amount: win_amount,
+                usd_amount: win_usd_amount,
                 cells: board,
-                bonus_amount,
-                bonus_fa: bonus_addr
+                fa_metadata: fa_address,
+                amount
             }
         });
 
@@ -253,29 +269,21 @@ module scratch_addr::scratch_off {
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         let usdc_obj = usdc();
 
-        // Transfer USDC prize
-        let usdc_amount = Card[card_address].details.usdc_amount;
-        primary_fungible_store::transfer(&game_signer, usdc_obj, caller_address, usdc_amount);
-
-        // Transfer bonus prize
-        let (bonus_amount, bonus_fa) = if (Card[card_address].details.bonus_amount > 0) {
-            let bonus_fa = Card[card_address].details.bonus_fa;
-            let bonus_amount = Card[card_address].details.bonus_amount;
-            primary_fungible_store::transfer(&game_signer, fa_metadata(bonus_fa), caller_address, bonus_amount);
-            (bonus_amount, bonus_fa)
-        } else {
-            (0, @0x0)
-        };
+        // Transfer prize
+        let fa_address = Card[card_address].details.fa_metadata;
+        let amount = Card[card_address].details.amount;
+        primary_fungible_store::transfer(&game_signer, fa_metadata(fa_address), caller_address, amount);
 
         emit(ScratcherEvent::Scratch {
             owner: caller_address,
             card: card_address,
-            usdc_amount,
-            bonus_amount,
-            bonus_fa,
+            usd_amount: Card[card_address].details.usd_amount,
+            fa_metadata: fa_address,
+            amount
         })
     }
 
+    /// Evaluates win amount from a grid
     inline fun evaluate_win_amount(cells: &vector<vector<u64>>): u64 {
         let win_amount = 0;
         // Evaluate win per row
@@ -313,9 +321,64 @@ module scratch_addr::scratch_off {
         game_state.prizes = ordered_map::new_from(odds, payouts);
     }
 
-    /// Odds must be equal length with payouts.  Odds must add up underneath 100%
-    entry fun set_bonus_prizes(admin: &signer, odds: vector<u64>, assets: vector<address>) {
+    /// Sets prizes, must already have rates for the prizes
+    entry fun set_fa_prizes(
+        admin: &signer,
+        odds: vector<u64>,
+        assets: vector<address>,
+    ) {
         verify_admin(admin);
+        let game_state = game_state_mut();
+        // Verify that the prizes have rates
+
+        let rate_assets = game_state.fa_rates.keys();
+        assert!(
+            rate_assets.length() == assets.length() && rate_assets.all(|prize| assets.contains(prize)),
+            E_MISMATCHED_ASSETS
+        );
+        game_state.set_fa_prizes_i(odds, assets);
+    }
+
+    /// Sets rates, must match the existing assets
+    entry fun set_fa_rates(
+        admin: &signer,
+        assets: vector<address>,
+        rate_numerators: vector<u64>,
+        rate_denominators: vector<u64>,
+    ) {
+        verify_admin(admin);
+        let game_state = game_state_mut();
+
+        // Verify that all assets have rates
+        let prize_assets = game_state.fa_prizes.values();
+        // This is close enough for now, realistically we want a set... make sure there aren't duplicates
+        assert!(
+            prize_assets.length() == assets.length() && prize_assets.all(|prize| assets.contains(prize)),
+            E_MISMATCHED_ASSETS
+        );
+        game_state.set_fa_rates_i(assets, rate_numerators, rate_denominators);
+    }
+
+    /// Odds must be equal length with payouts.  Odds must add up underneath 100%
+    entry fun set_fa_prizes_and_rates(
+        admin: &signer,
+        odds: vector<u64>,
+        assets: vector<address>,
+        rate_numerators: vector<u64>,
+        rate_denominators: vector<u64>,
+    ) {
+        verify_admin(admin);
+        let game_state = game_state_mut();
+        game_state.set_fa_prizes_i(odds, assets);
+        game_state.set_fa_rates_i(assets, rate_numerators, rate_denominators);
+    }
+
+    /// Sets odds and prizes at the same time
+    fun set_fa_prizes_i(
+        self: &mut GameState,
+        odds: vector<u64>,
+        assets: vector<address>,
+    ) {
         let odds_length = odds.length();
         let assets_length = assets.length();
         assert!(odds_length == assets_length, E_INVALID_ODDS_AND_PRIZES);
@@ -323,21 +386,38 @@ module scratch_addr::scratch_off {
         // Verify that the odds are < 100%
         assert!(odds.fold(0, |acc, val| acc + val) <= HUNDRED_PERCENT, E_ODDS_GREATER_THAN_HUNDRED_PERCENT);
 
-        let game_state = game_state_mut();
-        game_state.bonus_prizes = ordered_map::new_from(odds, assets);
+        self.fa_prizes = ordered_map::new_from(odds, assets);
+    }
+
+    fun set_fa_rates_i(
+        self: &mut GameState,
+        assets: vector<address>,
+        rate_numerators: vector<u64>,
+        rate_denominators: vector<u64>,
+    ) {
+        let assets_length = assets.length();
+        let numer_length = rate_numerators.length();
+        let denom_length = rate_denominators.length();
+        assert!(assets_length == numer_length, E_INVALID_NUMERATOR_LENGTH);
+        assert!(assets_length == denom_length, E_INVALID_DENOMINATOR_LENGTH);
+        let rates = rate_numerators.zip_map(rate_denominators, |num, denom| {
+            assert!(denom > 0, E_INVALID_DENOMINATOR);
+            ratio::new(num, denom)
+        });
+        self.fa_rates = ordered_map::new_from(assets, rates);
     }
 
     /// Withdraws funds to the destination address
-    entry fun withdraw_funds(admin: &signer, destination: address, amount: u64) {
+    entry fun withdraw_funds(admin: &signer, fa_metadata: Object<Metadata>, destination: address, amount: u64) {
         assert!(amount > 0, E_CANT_WITHDRAW_ZERO_BALANCE);
         verify_admin(admin);
         let game_state = game_state();
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
         assert!(
-            primary_fungible_store::is_balance_at_least(game_object_addr(), usdc(), amount),
+            primary_fungible_store::is_balance_at_least(game_object_addr(), fa_metadata, amount),
             E_NOT_ENOUGH_USDC_TO_WITHDRAW
         );
-        primary_fungible_store::transfer(&game_signer, usdc(), destination, amount)
+        primary_fungible_store::transfer(&game_signer, fa_metadata, destination, amount)
     }
 
     /// Sets the admin to a new admin
@@ -364,7 +444,8 @@ module scratch_addr::scratch_off {
                 admin: @scratch_addr,
                 extend_ref,
                 prizes,
-                bonus_prizes: ordered_map::new()
+                fa_prizes: ordered_map::new(),
+                fa_rates: ordered_map::new()
             }
         );
 
