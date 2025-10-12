@@ -75,6 +75,8 @@ module scratch_addr::scratch_off {
     const E_NOT_REDEEMABLE: u64 = 19;
     /// Code already redeemed
     const E_ALREADY_REDEEMED: u64 = 20;
+    /// Invalid code hash length, must be 32 bytes
+    const E_INVALID_CODE_HASH_LENGTH: u64 = 21;
 
     #[event]
     enum ScratcherEvent has drop, store {
@@ -168,6 +170,8 @@ module scratch_addr::scratch_off {
 
         // Dedupe on already inserted codes, only allow for new ones
         codes.for_each(|code| {
+            // Codes must be 32 bytes
+            assert!(code.length() == 32, E_INVALID_CODE_HASH_LENGTH);
             if (!redeem_state.codes.contains(&code)) {
                 redeem_state.codes.add(code, false);
             };
@@ -517,7 +521,8 @@ module scratch_addr::scratch_off {
                 prizes,
                 fa_prizes: ordered_map::new(),
                 fa_rates: ordered_map::new(),
-                codes: big_ordered_map::new(),
+                // 32 byte vector (with one byte length) key, 1 byte boolean value
+                codes: big_ordered_map::new_with_type_size_hints(33, 33, 1, 1),
             }
         );
 
