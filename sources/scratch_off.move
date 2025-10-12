@@ -192,7 +192,7 @@ module scratch_addr::scratch_off {
                 if (y == win_row) {
                     board[y][x] = win_usd_amount;
                 } else {
-                    board[y][x] = randomness::u64_range(0, num_prizes);
+                    board[y][x] = prize_values[randomness::u64_range(0, num_prizes)];
                 }
             }
         };
