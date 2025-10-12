@@ -3,11 +3,11 @@
 /// Each card has 12 cells
 module scratch_addr::scratch_off {
 
-    use std::option;
-    use std::option::Option;
+    use std::hash;
+    use std::option::{Self, Option};
     use std::signer;
     use std::string::utf8;
-    use aptos_std::debug;
+    use aptos_std::big_ordered_map::{Self, BigOrderedMap};
     use aptos_std::ordered_map::{Self, OrderedMap};
     use aptos_framework::event::emit;
     use aptos_framework::fungible_asset::Metadata;
@@ -16,8 +16,7 @@ module scratch_addr::scratch_off {
     use aptos_framework::randomness;
     use aptos_token_objects::collection;
     use aptos_token_objects::token::{Self, Token, BurnRef, MutatorRef};
-    use scratch_addr::ratio::Ratio;
-    use scratch_addr::ratio;
+    use scratch_addr::ratio::{Self, Ratio};
 
     /// Cost in smallest unit (e.g., 1 USDC = 1_000_000 micro USDC)
     const COST_PER_CARD: u64 = 1_000_000;
@@ -70,6 +69,13 @@ module scratch_addr::scratch_off {
     /// Not enough tokens to output winnings
     const E_NOT_ENOUGH_TOKENS: u64 = 17;
 
+    /// Redeeming is not setup
+    const E_REDEEMS_NOT_SETUP: u64 = 18;
+    /// Code is invalid, and not redeemable
+    const E_NOT_REDEEMABLE: u64 = 19;
+    /// Code already redeemed
+    const E_ALREADY_REDEEMED: u64 = 20;
+
     #[event]
     enum ScratcherEvent has drop, store {
         Buy {
@@ -102,7 +108,9 @@ module scratch_addr::scratch_off {
         /// Address for each prize associated, defaults to USDC
         fa_prizes: OrderedMap<u64, address>,
         /// Payout ratios for other prizes that aren't USDC
-        fa_rates: OrderedMap<address, Ratio>
+        fa_rates: OrderedMap<address, Ratio>,
+        /// Redeem codes
+        codes: BigOrderedMap<vector<u8>, bool>
     }
 
     #[resource_group = 0x1::object::ObjectGroup]
@@ -140,27 +148,66 @@ module scratch_addr::scratch_off {
         let buyer = signer::address_of(caller);
 
         // Take money
-        debug::print(&utf8(b"1"));
         let game_addr = game_object_addr();
         let cost = num_cards * COST_PER_CARD;
-        debug::print(&utf8(b"2"));
         assert!(primary_fungible_store::is_balance_at_least(buyer, usdc(), cost), E_NOT_ENOUGH_USDC);
-        debug::print(&utf8(b"3"));
         primary_fungible_store::transfer(caller, usdc(), game_addr, cost);
 
-        debug::print(&utf8(b"4"));
+        // Give cards
+        mint_cards(buyer, num_cards);
+    }
+
+    /// Add redeem codes, these should be SHA3_256 hashes of the following:
+    ///
+    /// SHA3_256(redeem-salt + UTF-8 string)
+    entry fun add_redeem_codes(admin: &signer, codes: vector<vector<u8>>) {
+        verify_admin(admin);
+
+        let game_addr = game_object_addr();
+        let redeem_state = &mut GameState[game_addr];
+
+        // Dedupe on already inserted codes, only allow for new ones
+        codes.for_each(|code| {
+            if (!redeem_state.codes.contains(&code)) {
+                redeem_state.codes.add(code, false);
+            };
+        });
+    }
+
+    #[randomness]
+    /// Buy multiple scratcher cards, this must be private, or can be gamed
+    entry fun redeem_card(redeemer: &signer, code: vector<u8>) {
+        let hash_input = b"redeem-salt";
+        hash_input.append(code);
+        let hash = hash::sha3_256(hash_input);
+
+        // Check the hash
+        let game_addr = game_object_addr();
+        assert!(GameState[game_addr].codes.contains(&hash), E_NOT_REDEEMABLE);
+        let code_state = GameState[game_addr].codes.borrow_mut(&hash);
+        assert!(!*code_state, E_ALREADY_REDEEMED);
+        *code_state = true;
+
+        // Give cards
+        let redeemer_addr = signer::address_of(redeemer);
+        mint_cards(redeemer_addr, 1);
+    }
+
+    inline fun mint_cards(receiver: address, num_cards: u64): vector<address> {
         // Give cards
         let game_state = game_state_mut();
         let prizes = &game_state.prizes;
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
+        let addresses = vector[];
         for (i in 0..num_cards) {
-            debug::print(&utf8(b"5"));
-            init_card(&game_signer, buyer, prizes);
+            addresses.push_back(init_card(&game_signer, receiver, prizes));
         };
+
+        addresses
     }
 
     /// Initializes a single card, uses randomness to generate the grid
-    inline fun init_card(game_signer: &signer, receiver: address, prizes: &OrderedMap<u64, u64>) {
+    inline fun init_card(game_signer: &signer, receiver: address, prizes: &OrderedMap<u64, u64>): address {
         let const_ref = token::create_numbered_token(
             game_signer,
             utf8(COLLECTION_NAME),
@@ -171,7 +218,6 @@ module scratch_addr::scratch_off {
             utf8(SCRATCHER_URI),
         );
 
-        debug::print(&utf8(b"6"));
         // Generate the squares
         let board = vector[
             vector[0, 0, 0],
@@ -186,7 +232,6 @@ module scratch_addr::scratch_off {
 
         let prize_values = prizes.values();
         let num_prizes = prize_values.length();
-        debug::print(&utf8(b"7"));
         for (y in 0..4) {
             for (x in 0..3) {
                 if (y == win_row) {
@@ -197,10 +242,8 @@ module scratch_addr::scratch_off {
             }
         };
         // Now determine the token to return, default to USDC
-        debug::print(&utf8(b"9"));
         let game_state = game_state();
         let fa_address = pick_amount(&game_state.fa_prizes).destroy_with_default(@usdc_address);
-        debug::print(&utf8(b"10"));
         let amount = if (fa_address != @usdc_address) {
             // Use the fa_rates to do the conversion
             assert!(game_state.fa_rates.contains(&fa_address), E_INVALID_FA_CONVERSION_RATIO);
@@ -210,7 +253,6 @@ module scratch_addr::scratch_off {
             win_usd_amount
         };
 
-        debug::print(&utf8(b"11"));
         let card_addr = object::address_from_constructor_ref(&const_ref);
         emit(ScratcherEvent::Buy {
             owner: receiver,
@@ -221,7 +263,6 @@ module scratch_addr::scratch_off {
         });
 
         // Add details to the card
-        debug::print(&utf8(b"12"));
         let card_signer = object::generate_signer(&const_ref);
         let extend_ref = object::generate_extend_ref(&const_ref);
         let burn_ref = token::generate_burn_ref(&const_ref);
@@ -239,15 +280,15 @@ module scratch_addr::scratch_off {
             }
         });
 
-        debug::print(&utf8(b"13"));
         // Transfer to user
         let token = object::object_from_constructor_ref<Token>(&const_ref);
         object::transfer(game_signer, token, receiver);
 
         // Then make soulbound (cause why not)
-        debug::print(&utf8(b"14"));
         let transfer_ref = object::generate_transfer_ref(&const_ref);
         object::disable_ungated_transfer(&transfer_ref);
+
+        object::address_from_constructor_ref(&const_ref)
     }
 
     /// Picks an amount out of the prizes
@@ -475,7 +516,8 @@ module scratch_addr::scratch_off {
                 extend_ref,
                 prizes,
                 fa_prizes: ordered_map::new(),
-                fa_rates: ordered_map::new()
+                fa_rates: ordered_map::new(),
+                codes: big_ordered_map::new(),
             }
         );
 
