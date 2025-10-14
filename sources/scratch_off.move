@@ -580,8 +580,18 @@ module scratch_addr::scratch_off {
     }
 
     #[randomness]
-    /// Claims starter funds 5 USDC (while supplies last)
+    #[deprecated]
     entry fun claim_starter_funds(caller: &signer) {
+        claim_pack(caller);
+    }
+
+    #[randomness]
+    /// Claims starter pack
+    entry fun claim_starter_pack(caller: &signer) {
+        claim_pack(caller);
+    }
+
+    inline fun claim_pack(caller: &signer) {
         let caller_address = signer::address_of(caller);
         let game_addr = game_object_addr();
 
@@ -605,7 +615,17 @@ module scratch_addr::scratch_off {
     }
 
     #[view]
+    package fun has_claimed_starter_pack(addr: address): bool {
+        has_claimed_starter(addr)
+    }
+
+    #[view]
+    #[deprecated]
     package fun has_claimed_starter_funds(addr: address): bool {
+        has_claimed_starter(addr)
+    }
+
+    inline fun has_claimed_starter(addr: address): bool {
         let game_addr = game_object_addr();
         if (exists<Claims>(game_addr)) {
             Claims[game_addr].claims.contains(&addr)
