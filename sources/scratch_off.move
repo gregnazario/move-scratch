@@ -24,8 +24,6 @@ module scratch_addr::scratch_off {
     const SEED: vector<u8> = b"scratch_off";
     /// 100% in odds
     const HUNDRED_PERCENT: u64 = 100_000;
-    /// Claim is 5 USDC
-    const CLAIM_AMOUNT: u64 = 5_000_000;
 
     const COLLECTION_NAME: vector<u8> = b"Scratchers";
     // TODO Collection image
@@ -601,8 +599,8 @@ module scratch_addr::scratch_off {
         // Mark off the claim now
         claims.add(caller_address, true);
 
-        // Transfer claim
-        primary_fungible_store::transfer(game_signer, fa_metadata(@usdc_address), caller_address, CLAIM_AMOUNT);
+        // Mint 3 cards
+        mint_cards(caller_address, 3);
     }
 
     #[view]
