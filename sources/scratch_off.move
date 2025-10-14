@@ -11,7 +11,7 @@ module scratch_addr::scratch_off {
     use aptos_std::ordered_map::{Self, OrderedMap};
     use aptos_framework::event::emit;
     use aptos_framework::fungible_asset::Metadata;
-    use aptos_framework::object::{Self, ExtendRef, Object};
+    use aptos_framework::object::{Self, ExtendRef, Object, ObjectGroup};
     use aptos_framework::primary_fungible_store;
     use aptos_framework::randomness;
     use aptos_token_objects::collection;
@@ -24,6 +24,8 @@ module scratch_addr::scratch_off {
     const SEED: vector<u8> = b"scratch_off";
     /// 100% in odds
     const HUNDRED_PERCENT: u64 = 100_000;
+    /// Claim is 5 USDC
+    const CLAIM_AMOUNT: u64 = 5_000_000;
 
     const COLLECTION_NAME: vector<u8> = b"Scratchers";
     // TODO Collection image
@@ -96,7 +98,7 @@ module scratch_addr::scratch_off {
         }
     }
 
-    #[resource_group = 0x1::object::ObjectGroup]
+    #[resource_group = ObjectGroup]
     /// Game state, is at the game object, keeps track of admin, and can payout prizes
     ///
     /// This object contains the funds from buying and payouts
@@ -115,7 +117,12 @@ module scratch_addr::scratch_off {
         codes: BigOrderedMap<vector<u8>, bool>
     }
 
-    #[resource_group = 0x1::object::ObjectGroup]
+    #[resource_group = ObjectGroup]
+    struct Claims has key {
+        claims: BigOrderedMap<address, bool>
+    }
+
+    #[resource_group = ObjectGroup]
     /// Game card at initial mint should have a predetermined outcome, however the user
     /// cannot cheat to stop from buying a bad outcome, even with undergasing which would be difficult
     struct Card has key {
@@ -572,6 +579,40 @@ module scratch_addr::scratch_off {
     fun get_card(card: Object<Card>): CardSummary {
         let obj_addr = object::object_address(&card);
         Card[obj_addr].details
+    }
+
+    /// Claims starter funds 5 USDC (while supplies last)
+    entry fun claim_starter_funds(caller: &signer) {
+        let caller_address = signer::address_of(caller);
+        let game_addr = game_object_addr();
+
+        // Check claims is setup
+        let game_signer = &object::generate_signer_for_extending(&game_state().extend_ref);
+        if (!exists<Claims>(game_addr)) {
+            move_to(game_signer, Claims {
+                claims: big_ordered_map::new()
+            });
+        };
+
+        // Validate they didn't claim yet
+        let claims = &mut Claims[game_addr].claims;
+        assert!(!claims.contains(&caller_address));
+
+        // Mark off the claim now
+        claims.add(caller_address, true);
+
+        // Transfer claim
+        primary_fungible_store::transfer(game_signer, fa_metadata(@usdc_address), caller_address, CLAIM_AMOUNT);
+    }
+
+    #[view]
+    fun has_claimed_starter_funds(addr: address): bool {
+        let game_addr = game_object_addr();
+        if (exists<Claims>(game_addr)) {
+            Claims[game_addr].claims.contains(&addr)
+        } else {
+            false
+        }
     }
 
     // TODO: add tests
