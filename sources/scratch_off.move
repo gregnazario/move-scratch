@@ -25,11 +25,13 @@ module scratch_addr::scratch_off {
     /// 100% in odds
     const HUNDRED_PERCENT: u64 = 100_000;
 
+    const REDEEM_SALT: vector<u8> = b"redeem-salt";
+
     const COLLECTION_NAME: vector<u8> = b"Scratchers";
-    // TODO Collection image
-    const COLLECTION_URI: vector<u8> = b"";
-    // TODO Scratcher image
-    const SCRATCHER_URI: vector<u8> = b"";
+    /// Collection Image
+    const COLLECTION_URI: vector<u8> = b"ipfs://bafybeih3nlgbbmeabllmkldfiekoryn22nrrnwgmpa6agjuplyyyljnufa/collection.png";
+    /// Scratcher Image
+    const SCRATCHER_URI: vector<u8> = b"ipfs://bafybeih3nlgbbmeabllmkldfiekoryn22nrrnwgmpa6agjuplyyyljnufa/token.png";
     /// Default odds 15%, 20%, 40%, 12%, 8%, 3%, 0.35%, 0.07%
     const DEFAULT_ODDS: vector<u64> = vector[15_000, 20_000, 40_000, 12_000, 8_000, 3_000, 350, 70];
     /// Default prizes 0, $0.25, $0.50, $0.75, $2, $5, $25, $100
@@ -77,6 +79,11 @@ module scratch_addr::scratch_off {
     const E_ALREADY_REDEEMED: u64 = 20;
     /// Invalid code hash length, must be 32 bytes
     const E_INVALID_CODE_HASH_LENGTH: u64 = 21;
+
+    /// Already claimed starter pack
+    const E_ALREADY_CLAIMED: u64 = 22;
+    /// Not allowed to reset user
+    const E_NOT_ALLOWED_TO_RESET: u64 = 23;
 
     #[event]
     enum ScratcherEvent has drop, store {
@@ -183,10 +190,18 @@ module scratch_addr::scratch_off {
         });
     }
 
+    #[view]
+    /// Generates a redeem code from the input code
+    package fun generate_redeem_code(code: vector<u8>): vector<u8> {
+        let hash_input = REDEEM_SALT;
+        hash_input.append(code);
+        hash::sha3_256(hash_input)
+    }
+
     #[randomness]
     /// Buy multiple scratcher cards, this must be private, or can be gamed
     entry fun redeem_card(redeemer: &signer, code: vector<u8>) {
-        let hash_input = b"redeem-salt";
+        let hash_input = REDEEM_SALT;
         hash_input.append(code);
         let hash = hash::sha3_256(hash_input);
 
@@ -530,6 +545,9 @@ module scratch_addr::scratch_off {
                 codes: big_ordered_map::new_with_type_size_hints(33, 33, 1, 1),
             }
         );
+        move_to(&game_signer, Claims {
+            claims: big_ordered_map::new()
+        });
 
         // Make scratcher collection, owned by object
         let _const_ref = collection::create_unlimited_collection(
@@ -580,32 +598,14 @@ module scratch_addr::scratch_off {
     }
 
     #[randomness]
-    #[deprecated]
-    entry fun claim_starter_funds(caller: &signer) {
-        claim_pack(caller);
-    }
-
-    #[randomness]
     /// Claims starter pack
     entry fun claim_starter_pack(caller: &signer) {
-        claim_pack(caller);
-    }
-
-    inline fun claim_pack(caller: &signer) {
         let caller_address = signer::address_of(caller);
         let game_addr = game_object_addr();
 
-        // Check claims is setup
-        let game_signer = &object::generate_signer_for_extending(&game_state().extend_ref);
-        if (!exists<Claims>(game_addr)) {
-            move_to(game_signer, Claims {
-                claims: big_ordered_map::new()
-            });
-        };
-
         // Validate they didn't claim yet
         let claims = &mut Claims[game_addr].claims;
-        assert!(!claims.contains(&caller_address));
+        assert!(!claims.contains(&caller_address), E_ALREADY_CLAIMED);
 
         // Mark off the claim now
         claims.add(caller_address, true);
@@ -616,23 +616,7 @@ module scratch_addr::scratch_off {
 
     #[view]
     package fun has_claimed_starter_pack(addr: address): bool {
-        has_claimed_starter(addr)
-    }
-
-    #[view]
-    #[deprecated]
-    package fun has_claimed_starter_funds(addr: address): bool {
-        has_claimed_starter(addr)
-    }
-
-    inline fun has_claimed_starter(addr: address): bool {
         let game_addr = game_object_addr();
-        if (exists<Claims>(game_addr)) {
-            Claims[game_addr].claims.contains(&addr)
-        } else {
-            false
-        }
+        Claims[game_addr].claims.contains(&addr)
     }
-
-    // TODO: add tests
 }

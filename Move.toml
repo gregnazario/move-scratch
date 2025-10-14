@@ -7,9 +7,9 @@ authors = []
 scratch_addr = "_"
 #usdc_address = "_"
 # Mainnet
-# usdc_address = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b"
+usdc_address = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b"
 #Testnet
-usdc_address = "0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832"
+#usdc_address = "0x69091fbab5f7d635ee7ac5098cf0c1efbe31d68fec0f2cd565e8d168daf52832"
 
 [dev-addresses]
 scratch_addr = "0xabcd"
