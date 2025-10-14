@@ -579,6 +579,7 @@ module scratch_addr::scratch_off {
         Card[obj_addr].details
     }
 
+    #[randomness]
     /// Claims starter funds 5 USDC (while supplies last)
     entry fun claim_starter_funds(caller: &signer) {
         let caller_address = signer::address_of(caller);
