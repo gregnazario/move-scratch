@@ -576,7 +576,7 @@ module scratch_addr::scratch_off {
     }
 
     #[view]
-    fun get_card(card: Object<Card>): CardSummary {
+    package fun get_card(card: Object<Card>): CardSummary {
         let obj_addr = object::object_address(&card);
         Card[obj_addr].details
     }
@@ -606,7 +606,7 @@ module scratch_addr::scratch_off {
     }
 
     #[view]
-    fun has_claimed_starter_funds(addr: address): bool {
+    package fun has_claimed_starter_funds(addr: address): bool {
         let game_addr = game_object_addr();
         if (exists<Claims>(game_addr)) {
             Claims[game_addr].claims.contains(&addr)
