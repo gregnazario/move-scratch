@@ -341,13 +341,29 @@ module scratch_addr::scratch_off {
         option::none()
     }
 
-    #[randomness]
     /// Scratches whole card, and pays out the predetermined amount
     entry fun scratch_card(caller: &signer, card: Object<Card>) {
         let caller_address = signer::address_of(caller);
         // Check that they're the owner
         assert!(object::is_owner(card, caller_address), E_NOT_CARD_OWNER);
 
+        scratch_card_inner(caller_address, card);
+    }
+
+    /// Scratches multiple cards on behalf of users
+    entry fun scratch_cards_for_user(caller: &signer, cards: vector<Object<Card>>) {
+        cards.for_each(|card| {
+            scratch_card_for_user(caller, card)
+        })
+    }
+
+    /// Scratches multiple cards on behalf of users
+    entry fun scratch_card_for_user(_caller: &signer, card: Object<Card>) {
+        let card_owner = object::owner(card);
+        scratch_card_inner(card_owner, card)
+    }
+
+    inline fun scratch_card_inner(card_owner: address, card: Object<Card>) {
         // Check that it wasn't already scratched
         let card_address = object::object_address(&card);
         assert!(!Card[card_address].details.scratched, E_ALREADY_SCRATCHED);
@@ -357,7 +373,6 @@ module scratch_addr::scratch_off {
 
         let game_state = game_state();
         let game_signer = object::generate_signer_for_extending(&game_state.extend_ref);
-        let usdc_obj = usdc();
 
         // Transfer prize
         let fa_address = Card[card_address].details.fa_metadata;
@@ -367,10 +382,10 @@ module scratch_addr::scratch_off {
             primary_fungible_store::is_balance_at_least(signer::address_of(&game_signer), fa_metadata, amount),
             E_NOT_ENOUGH_TOKENS
         );
-        primary_fungible_store::transfer(&game_signer, fa_metadata, caller_address, amount);
+        primary_fungible_store::transfer(&game_signer, fa_metadata, card_owner, amount);
 
         emit(ScratcherEvent::Scratch {
-            owner: caller_address,
+            owner: card_owner,
             card: card_address,
             usd_amount: Card[card_address].details.usd_amount,
             fa_metadata: fa_address,
@@ -601,17 +616,28 @@ module scratch_addr::scratch_off {
     /// Claims starter pack
     entry fun claim_starter_pack(caller: &signer) {
         let caller_address = signer::address_of(caller);
+        claim_start_pack(caller_address);
+    }
+
+    #[randomness]
+    /// Claims starter pack on behalf of a user, verifies admin
+    entry fun claim_starter_pack_for_user(caller: &signer, addr: address) {
+        verify_admin(caller);
+        claim_start_pack(addr);
+    }
+
+    inline fun claim_start_pack(claimer: address) {
         let game_addr = game_object_addr();
 
         // Validate they didn't claim yet
         let claims = &mut Claims[game_addr].claims;
-        assert!(!claims.contains(&caller_address), E_ALREADY_CLAIMED);
+        assert!(!claims.contains(&claimer), E_ALREADY_CLAIMED);
 
         // Mark off the claim now
-        claims.add(caller_address, true);
+        claims.add(claimer, true);
 
         // Mint 3 cards
-        mint_cards(caller_address, 3);
+        mint_cards(claimer, 3);
     }
 
     #[view]
